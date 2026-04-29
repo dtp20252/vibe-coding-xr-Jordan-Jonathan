@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <title>XR Ultrasound Trainer | Cardiac Echo AR</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <link type="text/css" rel="stylesheet" href="https://xrblocks.github.io/css/xr.css" />
+    <script>
+      window.litDisableBundleWarning = true;
+    </script>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.182.0/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.182.0/examples/jsm/",
+          "troika-three-text": "https://cdn.jsdelivr.net/gh/protectwise/troika@028b81cf308f0f22e5aa8e78196be56ec1997af5/packages/troika-three-text/src/index.js",
+          "troika-three-utils": "https://cdn.jsdelivr.net/gh/protectwise/troika@v0.52.4/packages/troika-three-utils/src/index.js",
+          "troika-worker-utils": "https://cdn.jsdelivr.net/gh/protectwise/troika@v0.52.4/packages/troika-worker-utils/src/index.js",
+          "bidi-js": "https://esm.sh/bidi-js@%5E1.0.2?target=es2022",
+          "webgl-sdf-generator": "https://esm.sh/webgl-sdf-generator@1.1.1/es2022/webgl-sdf-generator.mjs",
+          "lit": "https://cdn.jsdelivr.net/gh/lit/dist@3/core/lit-core.min.js",
+          "lit/": "https://esm.run/lit@3/",
+          "xrblocks": "https://cdn.jsdelivr.net/npm/xrblocks@0.11.0/build/xrblocks.js",
+          "xrblocks/addons/": "https://cdn.jsdelivr.net/npm/xrblocks@0.11.0/build/addons/"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <script type="module">
+      import * as THREE from 'three';
+      import * as xb from 'xrblocks';
+
+      /**
+       * Medical AR Trainer for Ultrasound orientation.
+       * Complete with Bed, Limbs, Detailed Heart, and a Sleeping Patient Face.
+       */
+      class UltrasoundTrainer extends xb.Script {
+        constructor() {
+          super();
+          this.heartRoot = null;
+          this.guidanceArrow = null;
+          this.targetZones = {};
+          this.currentViewId = 'parasternal';
+          
+          this.views = {
+            'parasternal': {
+              name: 'Parasternal Long Axis',
+              target: 'parasternal',
+              rotation: [0.2, Math.PI / 2 + 0.5, -0.4],
+              scale: 1.1,
+              instruction: 'Letakkan probe di sela iga 3-4 kiri, sejajar sternum.',
+              tiltOffset: new THREE.Vector3(0.05, 0.4, 0.0) 
+            },
+            'apical': {
+              name: 'Apical (4/3/2 Chambers)',
+              target: 'apical',
+              rotation: [0, Math.PI / 2, 1.2],
+              scale: 1.2,
+              instruction: 'Arahkan probe ke apeks jantung (sela iga 5 lateral).',
+              tiltOffset: new THREE.Vector3(0.15, 0.35, 0.1) 
+            },
+            'subcostal': {
+              name: 'Subcostal View',
+              target: 'subcostal',
+              rotation: [Math.PI / 2.5, Math.PI / 2, 0.5],
+              scale: 1.0,
+              instruction: 'Letakkan probe di bawah ulu hati (Subkostal).',
+              tiltOffset: new THREE.Vector3(0.0, 0.3, 0.3) 
+            }
+          };
+        }
+
+        async init() {
+          this.add(new THREE.HemisphereLight(0xffffff, 0x444444, 3));
+          const dirLight = new THREE.DirectionalLight(0xffffff, 2);
+          dirLight.position.set(1, 2, 1);
+          this.add(dirLight);
+
+          // 1. Setup Patient Environment
+          this.createEnvironment();
+
+          // 2. Setup Floating Heart
+          this.heartRoot = new THREE.Group();
+          this.heartModel = this.createDetailedHeart();
+          this.heartRoot.add(this.heartModel);
+          this.heartRoot.position.set(0.1, 1.45, -0.85);
+          this.add(this.heartRoot);
+
+          // 3. Setup Guidance Arrow
+          this.createGuidanceArrow();
+
+          // 4. Spatial UI Panel
+          this.createUI();
+
+          this.switchView('parasternal');
+        }
+
+        createDetailedHeart() {
+          const group = new THREE.Group();
+          const muscleMat = new THREE.MeshPhongMaterial({ color: 0xdb4437, shininess: 30 });
+          const veinMat = new THREE.MeshPhongMaterial({ color: 0x4285f4, shininess: 50 }); 
+          const arteryMat = new THREE.MeshPhongMaterial({ color: 0xff0000, shininess: 50 }); 
+          
+          const ventricles = new THREE.Mesh(new THREE.IcosahedronGeometry(0.1, 2), muscleMat);
+          ventricles.scale.set(1, 1.3, 0.9);
+          group.add(ventricles);
+
+          const atria = new THREE.Mesh(new THREE.IcosahedronGeometry(0.08, 1), muscleMat);
+          atria.position.y = 0.08;
+          group.add(atria);
+
+          const aortaCurve = new THREE.CatmullRomCurve3([
+            new THREE.Vector3(0, 0.05, 0),
+            new THREE.Vector3(0.02, 0.15, 0.05),
+            new THREE.Vector3(0.08, 0.2, 0),
+            new THREE.Vector3(0.1, 0.1, -0.05),
+          ]);
+          const aortaGeo = new THREE.TubeGeometry(aortaCurve, 20, 0.02, 8, false);
+          group.add(new THREE.Mesh(aortaGeo, arteryMat));
+
+          const svcGeo = new THREE.CylinderGeometry(0.015, 0.015, 0.15, 16);
+          const svc = new THREE.Mesh(svcGeo, veinMat);
+          svc.position.set(-0.04, 0.18, -0.02);
+          group.add(svc);
+
+          return group;
+        }
+
+        createEnvironment() {
+          this.patientRoot = new THREE.Group();
+          this.patientRoot.rotation.y = -Math.PI / 2; // Head to the left
+          this.patientRoot.position.set(0, 0, -0.8);
+          this.add(this.patientRoot);
+
+          const skinMat = new THREE.MeshPhongMaterial({ color: 0xfffdd0 });
+          const bedMat = new THREE.MeshPhongMaterial({ color: 0xe0e0e0 });
+
+          // 1. Bed
+          const bed = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.1, 2.2), bedMat);
+          bed.position.set(0, 0.7, -0.1);
+          this.patientRoot.add(bed);
+
+          // 2. Torso Body
+          const bodyLen = 1.04;
+          const body = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.26, bodyLen), skinMat);
+          body.position.set(0, 0.9, 0);
+          this.patientRoot.add(body);
+
+          // 3. Head
+          const head = new THREE.Mesh(new THREE.SphereGeometry(0.12, 32, 32), skinMat);
+          head.scale.set(1, 1.3, 1);
+          head.position.set(0, 1.0, -0.7); 
+          this.patientRoot.add(head);
+
+          // 3b. Sleeping Face (-_-)
+          const face = new xb.TextView({
+            text: '(-_-)',
+            fontSize: 0.06,
+            fontColor: '#443322'
+          });
+          // Positioned slightly on top of the head sphere
+          face.position.set(0, 1.13, -0.7);
+          face.rotation.x = -Math.PI / 2; // Flat on face
+          face.rotation.z = Math.PI / 2; // Align with rotated body
+          this.patientRoot.add(face);
+
+          // 4. Arms
+          const armGeo = new THREE.CylinderGeometry(0.045, 0.045, 0.5, 16);
+          const leftArm = new THREE.Mesh(armGeo, skinMat);
+          leftArm.rotation.z = Math.PI / 2;
+          leftArm.rotation.y = 0.2;
+          leftArm.position.set(-0.3, 0.9, -0.2);
+          this.patientRoot.add(leftArm);
+
+          const rightArm = new THREE.Mesh(armGeo, skinMat);
+          rightArm.rotation.z = -Math.PI / 2;
+          rightArm.rotation.y = -0.2;
+          rightArm.position.set(0.3, 0.9, -0.2);
+          this.patientRoot.add(rightArm);
+
+          // 5. Legs (ATTACHED TO BODY)
+          const legGeo = new THREE.CylinderGeometry(0.055, 0.045, 0.8, 16);
+          
+          const leftLeg = new THREE.Mesh(legGeo, skinMat);
+          leftLeg.rotation.x = Math.PI / 2; 
+          leftLeg.position.set(-0.12, 0.9, 0.52 + 0.4); 
+          this.patientRoot.add(leftLeg);
+
+          const rightLeg = new THREE.Mesh(legGeo, skinMat);
+          rightLeg.rotation.x = Math.PI / 2; 
+          rightLeg.position.set(0.12, 0.9, 0.52 + 0.4);
+          this.patientRoot.add(rightLeg);
+
+          // Target Zones
+          this.targetZones.parasternal = this.createTargetRing('Parasternal', -0.04, 1.04, -0.3);
+          this.targetZones.apical = this.createTargetRing('Apical', -0.14, 1.04, -0.1);
+          this.targetZones.subcostal = this.createTargetRing('Subcostal', 0.0, 1.04, 0.12);
+          
+          this.patientRoot.add(this.targetZones.parasternal);
+          this.patientRoot.add(this.targetZones.apical);
+          this.patientRoot.add(this.targetZones.subcostal);
+        }
+
+        createTargetRing(label, x, y, z) {
+          const group = new THREE.Group();
+          const ring = new THREE.Mesh(
+            new THREE.RingGeometry(0.04, 0.05, 32),
+            new THREE.MeshBasicMaterial({ color: 0x34a853, side: THREE.DoubleSide })
+          );
+          ring.rotation.x = -Math.PI / 2;
+          group.add(ring);
+
+          const text = new xb.TextView({
+            text: label,
+            fontSize: 0.035,
+            fontColor: '#ffffff'
+          });
+          text.position.set(0, 0.06, 0);
+          text.rotation.y = Math.PI / 2; 
+          group.add(text);
+
+          group.position.set(x, y, z);
+          return group;
+        }
+
+        createGuidanceArrow() {
+          this.guidanceArrow = new THREE.Group();
+          const cone = new THREE.Mesh(
+            new THREE.ConeGeometry(0.02, 0.15, 16),
+            new THREE.MeshPhongMaterial({ color: 0x66ccff, transparent: true, opacity: 0.9 })
+          );
+          cone.rotation.x = Math.PI / 2; 
+          cone.position.z = 0.2; 
+          this.guidanceArrow.add(cone);
+
+          const stem = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.005, 0.005, 0.3),
+            new THREE.MeshBasicMaterial({ color: 0x66ccff, transparent: true, opacity: 0.4 })
+          );
+          stem.rotation.x = Math.PI / 2;
+          stem.position.z = 0.0; 
+          this.guidanceArrow.add(stem);
+          this.add(this.guidanceArrow);
+        }
+
+        createUI() {
+          const panel = new xb.SpatialPanel({
+            width: 1.3,
+            height: 0.85,
+            backgroundColor: '#111111ee'
+          });
+          panel.position.set(0.8, 1.45, -0.6);
+          panel.rotation.y = -0.5;
+          this.add(panel);
+
+          const grid = panel.addGrid();
+          grid.addRow({weight: 0.2}).addText({
+            text: 'ECHOCARDIOGRAPHY AR',
+            fontSize: 0.05,
+            fontColor: '#4285f4'
+          });
+
+          this.instructionDisplay = grid.addRow({weight: 0.25}).addText({
+            text: '...',
+            fontSize: 0.04,
+            fontColor: '#cccccc'
+          });
+
+          const btnRow = grid.addRow({weight: 0.55});
+          Object.keys(this.views).forEach(id => {
+            const btn = btnRow.addCol().addTextButton({
+              text: this.views[id].name,
+              fontSize: 0.2,
+              backgroundColor: '#222222'
+            });
+            btn.onTriggered = () => this.switchView(id);
+          });
+        }
+
+        switchView(id) {
+          this.currentViewId = id;
+          const viewData = this.views[id];
+          this.instructionDisplay.setText(`PROBE PLACEMENT:\n${viewData.instruction}`);
+          
+          const target = this.targetZones[viewData.target];
+          const worldPos = new THREE.Vector3();
+          target.getWorldPosition(worldPos);
+
+          const probeStartPos = worldPos.clone().add(viewData.tiltOffset);
+          this.guidanceArrow.position.copy(probeStartPos);
+          this.guidanceArrow.lookAt(worldPos);
+
+          this.heartModel.rotation.set(...viewData.rotation);
+          this.heartModel.scale.setScalar(viewData.scale);
+        }
+
+        update() {
+          const time = performance.now() / 1000;
+          if (this.targetZones[this.views[this.currentViewId].target]) {
+            const activeTarget = this.targetZones[this.views[this.currentViewId].target];
+            const s = 1.0 + Math.sin(time * 6) * 0.12;
+            activeTarget.scale.set(s, s, s);
+          }
+          const heartbeat = 1.0 + Math.sin(time * 10) * 0.015;
+          this.heartModel.scale.multiplyScalar(heartbeat);
+          this.heartModel.scale.divideScalar(heartbeat);
+        }
+      }
+
+      document.addEventListener('DOMContentLoaded', () => {
+        const options = new xb.Options();
+        options.enableUI();
+        options.enableReticles();
+        xb.add(new UltrasoundTrainer());
+        xb.init(options);
+      });
+    </script>
+  </body>
+</html>
